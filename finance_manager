@@ -1,0 +1,103 @@
+import sqlite3
+from datetime import datetime
+
+class FinanceManager:
+    def __init__(self, db_file="finance.db"):
+        self.db_file = db_file
+        self.conn = sqlite3.connect(self.db_file)
+        self.create_tables()
+
+    def create_tables(self):
+        with self.conn:
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    balance REAL DEFAULT 0.0,
+                    min_balance REAL DEFAULT 0.0,
+                    created_at TEXT
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    account_id INTEGER,
+                    description TEXT,
+                    payment_method TEXT,
+                    category TEXT,
+                    FOREIGN KEY (account_id) REFERENCES accounts (id)
+                )
+            ''')
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS custom_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER,
+                    transaction_type TEXT NOT NULL,
+                    category_name TEXT NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts (id)
+                )
+            ''')
+
+    def add_account(self, account_name, opening_balance=0.0, min_balance=0.0):
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.conn:
+            cursor = self.conn.execute('''
+                INSERT INTO accounts (name, balance, min_balance, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (account_name, opening_balance, min_balance, created_at))
+            return cursor.lastrowid
+
+    def add_transaction(self, account_id, amount, trans_type, description="", payment_method="كاش", category=""):
+        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        category_str = ", ".join(category) if isinstance(category, list) else category
+        with self.conn:
+            account = self.conn.execute('SELECT balance, min_balance FROM accounts WHERE id = ?', (account_id,)).fetchone()
+            if amount <= 0:
+                raise ValueError("المبلغ يجب أن يكون موجبًا")
+            if trans_type == "OUT" and account[0] < amount:
+                raise ValueError("الرصيد غير كافٍ")
+
+            self.conn.execute('''
+                INSERT INTO transactions (date, type, amount, account_id, description, payment_method, category)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (date, trans_type, amount, account_id, description, payment_method, category_str))
+
+            new_balance = account[0] + amount if trans_type == "IN" else account[0] - amount
+            self.conn.execute('UPDATE accounts SET balance = ? WHERE id = ?', (new_balance, account_id))
+
+    def check_alerts(self):
+        alerts = []
+        accounts = self.get_all_accounts()
+        for acc in accounts:
+            if acc[2] < acc[3]:
+                alerts.append(f"⚠️ الرصيد في حساب {acc[1]} أقل من الحد الأدنى!")
+        return alerts
+
+    def get_all_accounts(self):
+        return self.conn.execute('SELECT * FROM accounts').fetchall()
+
+    def get_all_transactions(self):
+        return self.conn.execute('SELECT * FROM transactions').fetchall()
+
+    def filter_transactions(self, account_id=None, start_date=None, end_date=None, trans_type=None, category=None):
+        query = 'SELECT * FROM transactions WHERE 1=1'
+        params = []
+        if account_id:
+            query += ' AND account_id = ?'
+            params.append(account_id)
+        if start_date:
+            query += ' AND date >= ?'
+            params.append(start_date)
+        if end_date:
+            query += ' AND date <= ?'
+            params.append(end_date)
+        if trans_type:
+            query += ' AND type = ?'
+            params.append(trans_type)
+        if category:
+            query += ' AND category LIKE ?'
+            params.append(f"%{category}%")
+        return self.conn.execute(query, params).fetchall()
